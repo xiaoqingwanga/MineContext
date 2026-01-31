@@ -10,6 +10,9 @@ export enum IpcChannel {
   App_SetSpellCheckLanguages = 'app:set-spell-check-languages',
   App_ShowUpdateDialog = 'app:show-update-dialog',
   App_CheckForUpdate = 'app:check-for-update',
+  App_DownloadUpdate = 'app:download-update',
+  App_QuitAndInstall = 'app:quit-and-install',
+  App_CancelDownload = 'app:cancel-download',
   App_Reload = 'app:reload',
   App_Info = 'app:info',
   App_Proxy = 'app:proxy',
@@ -335,5 +338,11 @@ export enum IpcChannel {
   Task_Start = 'task:start',
   Task_Stop = 'task:stop',
   Task_Update_Current_Record_App = 'task:update-current-record-app',
-  Task_Check_Can_Record = 'task:check-can-record'
+  Task_Check_Can_Record = 'task:check-can-record',
+
+  // Heatmap
+  Get_Heatmap_Data = 'heatmap:get-data',
+
+  // Home
+  Get_Home_LatestActivity = 'home:get-latest-activity'
 }

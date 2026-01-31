@@ -15,18 +15,25 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import List
+from typing import Any, List
+
 from PIL import Image
-from opencontext.context_processing.chunker import FAQChunker, StructuredFileChunker, DocumentTextChunker, ChunkingConfig
+
+from opencontext.context_processing.chunker import (
+    ChunkingConfig,
+    DocumentTextChunker,
+    FAQChunker,
+    StructuredFileChunker,
+)
 from opencontext.context_processing.processor.base_processor import BaseContextProcessor
 from opencontext.context_processing.processor.document_converter import DocumentConverter, PageInfo
+from opencontext.llm.global_vlm_client import generate_with_messages_async
 from opencontext.models.context import *
 from opencontext.models.enums import *
 from opencontext.monitoring.monitor import record_processing_error
 from opencontext.storage.global_storage import get_storage
-from opencontext.utils.logging_utils import get_logger
 from opencontext.utils.json_parser import parse_json_from_response
-from opencontext.llm.global_vlm_client import generate_with_messages_async
+from opencontext.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -38,6 +45,7 @@ class DocumentProcessor(BaseContextProcessor):
 
     def __init__(self):
         from opencontext.config.global_config import get_config
+
         config = get_config("processing.document_processor") or {}
         super().__init__(config)
 
@@ -49,7 +57,9 @@ class DocumentProcessor(BaseContextProcessor):
         doc_processing_config = get_config("document_processing") or {}
         self._enabled = doc_processing_config.get("enabled", True)
         self._dpi = doc_processing_config.get("dpi", 200)
-        self._vlm_batch_size = doc_processing_config.get("batch_size", 3)
+        self._vlm_batch_size = doc_processing_config.get(
+            "vlm_batch_size", doc_processing_config.get("batch_size", 6)
+        )
         self._text_threshold = doc_processing_config.get("text_threshold_per_page", 50)
 
         # Thread control
@@ -88,13 +98,36 @@ class DocumentProcessor(BaseContextProcessor):
         return "document_processor"
 
     def get_description(self) -> str:
-        return "Unified document processor: structured (CSV/XLSX), text, and visual (PDF/DOCX/images)"
+        return (
+            "Unified document processor: structured (CSV/XLSX), text, and visual (PDF/DOCX/images)"
+        )
+
+    def set_vlm_batch_size(self, vlm_batch_size: int) -> bool:
+        if not isinstance(vlm_batch_size, int) or vlm_batch_size < 1:
+            return False
+        self._vlm_batch_size = vlm_batch_size
+        return True
 
     @staticmethod
     def get_supported_formats() -> List[str]:
         return [
-            ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".docx", ".doc", ".pptx", ".ppt",
-            ".xlsx", ".xls", ".csv", ".jsonl", ".md", ".txt"
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".webp",
+            ".docx",
+            ".doc",
+            ".pptx",
+            ".ppt",
+            ".xlsx",
+            ".xls",
+            ".csv",
+            ".jsonl",
+            ".md",
+            ".txt",
         ]
 
     def _get_file_type(self, file_path: str) -> FileType:
@@ -117,19 +150,32 @@ class DocumentProcessor(BaseContextProcessor):
         return context.source == ContextSource.INPUT
 
     def _is_visual_document(self, context: RawContextProperties) -> bool:
-        if context.source != ContextSource.LOCAL_FILE:
+        if context.source not in [ContextSource.LOCAL_FILE, ContextSource.WEB_LINK]:
             return False
         file_ext = Path(context.content_path).suffix.lower()
-        visual_formats = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".docx", ".doc", ".pptx", ".ppt", ".md"}
+        visual_formats = {
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".webp",
+            ".docx",
+            ".doc",
+            ".pptx",
+            ".ppt",
+            ".md",
+        }
         return file_ext in visual_formats
 
     def can_process(self, context: RawContextProperties) -> bool:
         """Check if can process this context"""
-        if not self._enabled or not isinstance(context, RawContextProperties): 
+        if not self._enabled or not isinstance(context, RawContextProperties):
             return False
         if self._is_text_content(context):
             return True
-        if context.source == ContextSource.LOCAL_FILE:
+        if context.source in {ContextSource.LOCAL_FILE, ContextSource.WEB_LINK}:
             if not context.content_path or not Path(context.content_path).exists():
                 logger.warning(f"File not found: {context.content_path}")
                 return False
@@ -173,7 +219,6 @@ class DocumentProcessor(BaseContextProcessor):
 
                 time_end = int(time.time())
                 logger.info(f"Processed 1 document in {time_end - time_start} seconds")
-                
 
     def real_process(self, raw_context: RawContextProperties) -> List[ProcessedContext]:
         """处理文档"""
@@ -187,7 +232,9 @@ class DocumentProcessor(BaseContextProcessor):
             else:
                 contexts = self._process_visual_document(raw_context)
             all_processed_contexts.extend(contexts)
-            logger.info(f"Successfully processed document {raw_context.object_id}: {len(contexts)} contexts created")
+            logger.info(
+                f"Successfully processed document {raw_context.object_id}: {len(contexts)} contexts created"
+            )
             self._record_metrics(start_time, len(all_processed_contexts))
             return all_processed_contexts
 
@@ -197,7 +244,9 @@ class DocumentProcessor(BaseContextProcessor):
             record_processing_error(error_msg, processor_name=self.get_name(), context_count=1)
             return False
 
-    def _process_structured_document(self, raw_context: RawContextProperties) -> List[ProcessedContext]:
+    def _process_structured_document(
+        self, raw_context: RawContextProperties
+    ) -> List[ProcessedContext]:
         """Process structured documents (CSV/XLSX/JSONL)"""
         file_type = self._get_file_type(raw_context.content_path)
         if file_type == FileType.FAQ_XLSX:
@@ -210,7 +259,9 @@ class DocumentProcessor(BaseContextProcessor):
         chunks = list(chunker.chunk(raw_context))
         return self._create_contexts_from_chunks(raw_context, chunks)
 
-    def _create_contexts_from_chunks(self, raw_context: RawContextProperties, chunks: List[Chunk]) -> List[ProcessedContext]:
+    def _create_contexts_from_chunks(
+        self, raw_context: RawContextProperties, chunks: List[Chunk]
+    ) -> List[ProcessedContext]:
         """Create ProcessedContext from Chunk list"""
         contexts = []
         now = datetime.datetime.now()
@@ -285,7 +336,9 @@ class DocumentProcessor(BaseContextProcessor):
 
         raise ValueError(f"Unsupported file type for page-by-page: {file_ext}")
 
-    def _process_document_page_by_page(self, raw_context: RawContextProperties, file_path: str, file_ext: str) -> List[ProcessedContext]:
+    def _process_document_page_by_page(
+        self, raw_context: RawContextProperties, file_path: str, file_ext: str
+    ) -> List[ProcessedContext]:
         """
         Process document page-by-page (core logic)
 
@@ -312,7 +365,9 @@ class DocumentProcessor(BaseContextProcessor):
         text_pages = [p for p in page_infos if not p.has_visual_elements]
         vlm_pages = [p for p in page_infos if p.has_visual_elements]
 
-        logger.info(f"Document analysis: {len(text_pages)} text pages, {len(vlm_pages)} visual pages")
+        logger.info(
+            f"Document analysis: {len(text_pages)} text pages, {len(vlm_pages)} visual pages"
+        )
 
         # 3. Process visual pages (extract text)
         vlm_texts = {}  # dict: page_number -> extracted_text
@@ -331,7 +386,7 @@ class DocumentProcessor(BaseContextProcessor):
                     page_number=page_info.page_number,
                     text=vlm_texts[page_info.page_number],
                     has_visual_elements=False,  # Already extracted as text, no longer needs VLM
-                    doc_images=[]
+                    doc_images=[],
                 )
                 all_page_infos.append(new_page_info)
             else:
@@ -346,11 +401,26 @@ class DocumentProcessor(BaseContextProcessor):
         all_contexts = self._create_contexts_from_chunks(raw_context, chunks)
         return all_contexts
 
+    async def _run_tasks_with_progress(
+        self, tasks: List[Any], start_index: int, total_count: int
+    ) -> List[Any]:
+        results: List[Any] = []
+        completed = 0
+        for coro in asyncio.as_completed(tasks):
+            try:
+                r = await coro
+                results.append(r)
+            except Exception as e:
+                results.append(e)
+            completed += 1
+            logger.info(f"images {start_index + completed}/{total_count} processed")
+        return results
+
     def _extract_vlm_pages(self, file_path: str, page_infos: List[PageInfo]) -> List[str]:
         """Extract text from visual pages using VLM, returns extracted text list (in page order)"""
         file_ext = Path(file_path).suffix.lower()
 
-        if file_ext in [".docx", ".doc"]:
+        if file_ext in [".docx", ".doc", ".md"]:
             return self._process_vlm_pages_with_doc_images(page_infos)
 
         # For PDF and other formats, convert pages to images
@@ -390,16 +460,14 @@ class DocumentProcessor(BaseContextProcessor):
 
         # Collect result texts (as list)
         text_list = [
-            result.get('text', '').strip()
+            result.get("text", "").strip()
             for result in page_results
-            if result.get('text', '').strip()
+            if result.get("text", "").strip()
         ]
 
         return text_list
 
-    def _process_vlm_pages_with_doc_images(
-        self, page_infos: List[PageInfo]
-    ) -> List[str]:
+    def _process_vlm_pages_with_doc_images(self, page_infos: List[PageInfo]) -> List[str]:
         """
         Process DOCX pages using embedded images (instead of converting entire page to image), returns extracted text list
         """
@@ -421,6 +489,13 @@ class DocumentProcessor(BaseContextProcessor):
                 batch_images = all_doc_images[i : i + self._vlm_batch_size]
                 batch_page_nums = image_page_mapping[i : i + self._vlm_batch_size]
 
+                total = len(all_doc_images)
+                total_batches = (total + self._vlm_batch_size - 1) // self._vlm_batch_size
+                batch_index = i // self._vlm_batch_size + 1
+                logger.info(
+                    f"batch {batch_index}/{total_batches}, images {i+1}-{i+len(batch_images)} of {total}"
+                )
+
                 tasks = [
                     self._analyze_image_with_vlm(img, page_num)
                     for img, page_num in zip(batch_images, batch_page_nums)
@@ -432,7 +507,9 @@ class DocumentProcessor(BaseContextProcessor):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                batch_results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+                batch_results = loop.run_until_complete(
+                    self._run_tasks_with_progress(tasks, i, total)
+                )
 
                 for idx, result in enumerate(batch_results):
                     if isinstance(result, Exception):
@@ -452,18 +529,19 @@ class DocumentProcessor(BaseContextProcessor):
                 page_text_parts.append(page_info.text.strip())
 
             # Add image analysis results for this page
-            page_image_results = [r for r in image_results if r.get('page_number') == page_info.page_number]
+            page_image_results = [
+                r for r in image_results if r.get("page_number") == page_info.page_number
+            ]
             for img_result in page_image_results:
-                img_text = img_result.get('text', '').strip()
+                img_text = img_result.get("text", "").strip()
                 if img_text:
                     page_text_parts.append(img_text)
 
             if page_text_parts:
-                all_page_texts.append('\n'.join(page_text_parts))
+                all_page_texts.append("\n".join(page_text_parts))
 
         # Return text list instead of directly creating contexts
         return all_page_texts
-
 
     def _analyze_document_with_vlm(self, images: List[Image.Image]) -> List[str]:
         """Batch analyze document images using VLM, returns text list"""
@@ -483,7 +561,7 @@ class DocumentProcessor(BaseContextProcessor):
                 logger.error(f"Error processing image {idx + 1}: {result}")
                 raise RuntimeError(f"Error processing image {idx + 1}") from result
             else:
-                text = result.get('text', '').strip()
+                text = result.get("text", "").strip()
                 if text:
                     text_parts.append(text)
 
@@ -493,6 +571,7 @@ class DocumentProcessor(BaseContextProcessor):
         """Analyze single image using VLM (generic method)"""
         import base64
         import io
+
         from opencontext.config.global_config import get_prompt_group
 
         prompt_group = get_prompt_group("document_processing.vlm_analysis")
@@ -527,7 +606,9 @@ class DocumentProcessor(BaseContextProcessor):
             "page_number": page_number,
         }
 
-    def _process_txt_file(self, raw_context: RawContextProperties, file_path: str) -> List[ProcessedContext]:
+    def _process_txt_file(
+        self, raw_context: RawContextProperties, file_path: str
+    ) -> List[ProcessedContext]:
         """
         Process plain text file (.txt)
 
@@ -539,7 +620,7 @@ class DocumentProcessor(BaseContextProcessor):
         logger.info(f"Processing TXT file: {file_path}")
         try:
             # Read file content
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             if not content.strip():
@@ -569,4 +650,3 @@ class DocumentProcessor(BaseContextProcessor):
             )
         except ImportError:
             pass
-

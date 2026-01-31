@@ -45,6 +45,17 @@ capture:
     capture_interval: 5 # Screenshot interval (seconds)
     storage_path: "${CONTEXT_PATH:.}/screenshots" # Screenshot save directory
 
+  # Folder monitoring
+  folder_monitor:
+    enabled: false
+    monitor_interval: 30 # Monitor interval (seconds)
+    watch_folder_paths:
+      - "${CONTEXT_PATH:.}/persist/Documents"
+
+    recursive: true
+    max_file_size: 104857600 # Maximum file size to process (bytes), default: 100MB
+    initial_scan: true
+
   # File monitoring
   file_monitor:
     enabled: false
@@ -52,11 +63,6 @@ capture:
     initial_scan: true
     monitor_paths: "./doc"
     capture_interval: 30 # File monitoring interval (seconds)
-    # file_patterns:
-    #   - "*.txt"
-    #   - "*.md"
-    #   - "*.py"
-    #   - "*.js"
     ignore_patterns:
       - "**/node_modules/**"
       - "**/.git/**"
@@ -140,6 +146,8 @@ processing:
 storage:
   enabled: true
   backends:
+    # Vector database configuration - Choose either ChromaDB or Qdrant
+    # ChromaDB (default)
     - name: "default_vector"
       storage_type: "vector_db"
       backend: "chromadb"
@@ -147,6 +155,24 @@ storage:
         mode: "local" # Options: "local", "server"
         path: "${CONTEXT_PATH:.}/persist/chromadb"
         collection_prefix: "opencontext"
+
+    # Qdrant (alternative vector database)
+    # Uncomment to use Qdrant instead of ChromaDB:
+    # - name: "default_vector"
+    #   storage_type: "vector_db"
+    #   backend: "qdrant"
+    #   config:
+    #     # Vector size MUST match your embedding model's output dimension
+    #     vector_size: 1536 # Set this to match embedding_model.output_dim above (line 37)
+    #
+    #     # Local mode (uses file-based storage):
+    #     path: "${CONTEXT_PATH:.}/persist/qdrant"
+    #
+    #     # Server mode (comment out 'path' above and uncomment the settings below):
+    #     # host: "localhost"
+    #     # port: 6333
+    #     # https: false
+    #     # api_key: "${QDRANT_API_KEY}"  # Optional: API key for authentication
 
     - name: "document_store"
       storage_type: "document_db"

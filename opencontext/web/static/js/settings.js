@@ -493,7 +493,27 @@ async function validateModelConfig() {
     try {
         showToast('正在测试连接...', false);
 
-        const response = await fetch('/api/model_settings/validate');
+        // Collect current configuration from the form
+        const useSeparate = document.getElementById('separateEmbedding').checked;
+
+        const settings = {
+            config: {
+                modelPlatform: document.getElementById('modelPlatform').value,
+                modelId: document.getElementById('modelId').value,
+                baseUrl: document.getElementById('baseUrl').value,
+                apiKey: document.getElementById('apiKey').value,
+                embeddingModelId: document.getElementById('embeddingModelId').value,
+                embeddingBaseUrl: useSeparate ? document.getElementById('embeddingBaseUrl').value : null,
+                embeddingApiKey: useSeparate ? document.getElementById('embeddingApiKey').value : null,
+                embeddingModelPlatform: useSeparate ? document.getElementById('embeddingModelPlatform').value : null
+            }
+        };
+
+        const response = await fetch('/api/model_settings/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        });
 
         const data = await response.json();
 
@@ -775,6 +795,7 @@ async function viewHistory(category) {
     document.getElementById('historyCategory').textContent = category;
     document.getElementById('historyDetail').innerHTML = '<p class="text-muted">加载中...</p>';
     document.getElementById('regenerateBtn').disabled = true;
+    document.getElementById('exportBtn').disabled = true;
     document.getElementById('compareBtn').disabled = true;
 
     try {
@@ -861,7 +882,8 @@ async function loadHistoryDetail(category, filename) {
             `;
 
             document.getElementById('regenerateBtn').disabled = false;
-            document.getElementById('compareBtn').disabled = true; // 默认禁用，重新生成后启用
+            document.getElementById('exportBtn').disabled = false;
+            document.getElementById('compareBtn').disabled = true;
         }
     } catch (error) {
         console.error('加载历史记录详情失败:', error);
@@ -968,6 +990,7 @@ function compareResults() {
     const modal = new bootstrap.Modal(document.getElementById('compareModal'));
     modal.show();
 }
+
 
 // 覆盖原有的loadPrompts函数
 const originalLoadPrompts = loadPrompts;

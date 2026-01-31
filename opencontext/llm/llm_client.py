@@ -11,10 +11,11 @@ from enum import Enum
 from typing import Any, Dict, List
 
 from openai import APIError, AsyncOpenAI, OpenAI
+from volcenginesdkarkruntime import Ark
 
 from opencontext.models.context import Vectorize
-from opencontext.utils.logging_utils import get_logger
 from opencontext.monitoring import record_processing_stage
+from opencontext.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -44,6 +45,9 @@ class LLMClient:
         self.async_client = AsyncOpenAI(
             api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
+        if self.provider == LLMProvider.DOUBAO.value and self.llm_type == LLMType.EMBEDDING:
+            self.client = Ark(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+            self.async_client = None
 
     def generate(self, prompt: str, **kwargs) -> str:
         messages = [{"role": "user", "content": prompt}]
@@ -77,13 +81,13 @@ class LLMClient:
 
     def generate_embedding(self, text: str, **kwargs) -> List[float]:
         if self.llm_type == LLMType.EMBEDDING:
-            return self._openai_embedding(text, **kwargs)
+            return self._request_embedding(text, **kwargs)
         else:
             raise ValueError(f"Unsupported LLM type for embedding generation: {self.llm_type}")
 
     async def generate_embedding_async(self, text: str, **kwargs) -> List[float]:
         if self.llm_type == LLMType.EMBEDDING:
-            return await self._openai_embedding_async(text, **kwargs)
+            return await self._request_embedding_async(text, **kwargs)
         else:
             raise ValueError(f"Unsupported LLM type for embedding generation: {self.llm_type}")
 
@@ -260,54 +264,35 @@ class LLMClient:
             logger.error(f"OpenAI API async stream error: {e}")
             raise
 
-    def _openai_embedding(self, text: str, **kwargs) -> List[float]:
+    def _request_embedding(self, text: str, **kwargs) -> List[float]:
         try:
-            response = self.client.embeddings.create(model=self.model, input=[text])
-            embedding = response.data[0].embedding
+            if self.provider == LLMProvider.OPENAI.value:
+                response = self.client.embeddings.create(model=self.model, input=[text])
+                embedding = response.data[0].embedding
+            else:
+                response = self.client.multimodal_embeddings.create(
+                    model=self.model, input=[{"type": "text", "text": text}]
+                )
+                embedding = response.data.embedding
 
             # Record token usage
             if hasattr(response, "usage") and response.usage:
                 try:
                     from opencontext.monitoring import record_token_usage
 
-                    record_token_usage(
-                        model=self.model,
-                        prompt_tokens=response.usage.prompt_tokens,
-                        completion_tokens=0,  # embedding has no completion tokens
-                        total_tokens=response.usage.total_tokens,
-                    )
-                except ImportError:
-                    pass  # Monitoring module not installed or initialized
-
-            output_dim = kwargs.get("output_dim", self.config.get("output_dim", 0))
-            if output_dim and len(embedding) > output_dim:
-                import math
-
-                embedding = embedding[:output_dim]
-                norm = math.sqrt(sum(x**2 for x in embedding))
-                if norm > 0:
-                    embedding = [x / norm for x in embedding]
-
-            return embedding
-        except APIError as e:
-            logger.error(f"OpenAI API error during embedding: {e}")
-            raise
-          
-    async def _openai_embedding_async(self, text: str, **kwargs) -> List[float]:
-        try:
-            response = await self.async_client.embeddings.create(model=self.model, input=[text])
-            embedding = response.data[0].embedding
-
-            # Record token usage
-            if hasattr(response, "usage") and response.usage:
-                try:
-                    from opencontext.monitoring import record_token_usage
+                    usage = response.usage
+                    if isinstance(usage, dict):
+                        prompt_tokens = usage.get("prompt_tokens", 0)
+                        total_tokens = usage.get("total_tokens", 0)
+                    else:
+                        prompt_tokens = usage.prompt_tokens
+                        total_tokens = usage.total_tokens
 
                     record_token_usage(
                         model=self.model,
-                        prompt_tokens=response.usage.prompt_tokens,
+                        prompt_tokens=prompt_tokens,
                         completion_tokens=0,  # embedding has no completion tokens
-                        total_tokens=response.usage.total_tokens,
+                        total_tokens=total_tokens,
                     )
                 except ImportError:
                     pass  # Monitoring module not installed or initialized
@@ -326,20 +311,66 @@ class LLMClient:
             logger.error(f"OpenAI API error during embedding: {e}")
             raise
 
+    async def _request_embedding_async(self, text: str, **kwargs) -> List[float]:
+        try:
+            if self.provider == LLMProvider.OPENAI.value:
+                response = await self.async_client.embeddings.create(model=self.model, input=[text])
+                embedding = response.data[0].embedding
+            else:
+                response = self.client.multimodal_embeddings.create(
+                    model=self.model, input=[{"type": "text", "text": text}]
+                )
+                embedding = response.data.embedding
 
+            # Record token usage
+            if hasattr(response, "usage") and response.usage:
+                try:
+                    from opencontext.monitoring import record_token_usage
+
+                    usage = response.usage
+                    if isinstance(usage, dict):
+                        prompt_tokens = usage.get("prompt_tokens", 0)
+                        total_tokens = usage.get("total_tokens", 0)
+                    else:
+                        prompt_tokens = usage.prompt_tokens
+                        total_tokens = usage.total_tokens
+
+                    record_token_usage(
+                        model=self.model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=0,  # embedding has no completion tokens
+                        total_tokens=total_tokens,
+                    )
+                except ImportError:
+                    pass  # Monitoring module not installed or initialized
+
+            output_dim = kwargs.get("output_dim", self.config.get("output_dim", 0))
+            if output_dim and len(embedding) > output_dim:
+                import math
+
+                embedding = embedding[:output_dim]
+                norm = math.sqrt(sum(x**2 for x in embedding))
+                if norm > 0:
+                    embedding = [x / norm for x in embedding]
+
+            return embedding
+        except APIError as e:
+            logger.error(f"OpenAI API error during embedding: {e}")
+            raise
 
     def vectorize(self, vectorize: Vectorize, **kwargs):
         if vectorize.vector:
             return
         vectorize.vector = self.generate_embedding(vectorize.get_vectorize_content(), **kwargs)
         return
-      
+
     async def vectorize_async(self, vectorize: Vectorize, **kwargs):
         if vectorize.vector:
             return
-        vectorize.vector = await self.generate_embedding_async(vectorize.get_vectorize_content(), **kwargs)
+        vectorize.vector = await self.generate_embedding_async(
+            vectorize.get_vectorize_content(), **kwargs
+        )
         return
-      
 
     def validate(self) -> tuple[bool, str]:
         """
@@ -349,13 +380,42 @@ class LLMClient:
             tuple[bool, str]: (success, message)
         """
 
-        def _extract_error_summary(error_msg: str) -> str:
+        def _extract_error_summary(error: Any) -> str:
             """
             Extract a concise error summary from API error messages.
             Removes verbose API error details and keeps only the essential information.
             """
+            error_msg = str(error)
             if not error_msg:
                 return "Unknown error"
+
+            # 1. Check for specific Volcengine/Doubao error codes
+            volcengine_errors = {
+                "AccessDenied": "Access denied. Please ensure the model is enabled in the Volcengine console.",
+                "QuotaExceeded": "Quota exceeded. Please check your Volcengine account balance.",
+                "ModelAccountIpmRateLimitExceeded": "Model rate limit (IPM) exceeded.",
+                "AccountRateLimitExceeded": "Account rate limit exceeded.",
+                "RateLimitExceeded": "Rate limit exceeded.",
+                "InternalServiceError": "Volcengine internal service error.",
+                "ServiceUnavailable": "Service unavailable.",
+                "MethodNotAllowed": "Method not allowed. Check your configuration.",
+            }
+
+            for code, msg in volcengine_errors.items():
+                if code in error_msg:
+                    return msg
+
+            # 2. Check for OpenAI specific errors
+            openai_errors = {
+                "insufficient_quota": "Insufficient quota. Check your plan and billing details.",
+                "invalid_api_key": "Invalid API key provided.",
+                "model_not_found": "The model does not exist or you do not have access to it.",
+                "context_length_exceeded": "Context length exceeded.",
+            }
+
+            for code, msg in openai_errors.items():
+                if code in error_msg:
+                    return msg
 
             # If it's an API error with detailed JSON response, extract key info
             if "Error code:" in error_msg:
@@ -416,23 +476,30 @@ class LLMClient:
 
             elif self.llm_type == LLMType.EMBEDDING:
                 # Test with a simple text
-                response = self.client.embeddings.create(model=self.model, input=["test"])
-                if response.data and len(response.data) > 0 and response.data[0].embedding:
-                    return True, "Embedding model validation successful"
+                if self.provider == LLMProvider.OPENAI.value:
+                    response = self.client.embeddings.create(model=self.model, input=["test"])
+                    if response.data and len(response.data) > 0 and response.data[0].embedding:
+                        return True, "Embedding model validation successful"
+                    else:
+                        return False, "Embedding model returned empty response"
                 else:
-                    return False, "Embedding model returned empty response"
+                    response = self.client.multimodal_embeddings.create(
+                        model=self.model, input=[{"type": "text", "text": "test"}]
+                    )
+                    if response.data and response.data.embedding:
+                        return True, "Embedding model validation successful"
+                    else:
+                        return False, "Embedding model returned empty response"
             else:
                 return False, f"Unsupported LLM type: {self.llm_type}"
 
         except APIError as e:
-            error_msg = str(e)
-            logger.error(f"LLM validation failed with API error: {error_msg}")
+            logger.error(f"LLM validation failed with API error: {e}")
             # Extract concise error summary before returning
-            concise_error = _extract_error_summary(error_msg)
+            concise_error = _extract_error_summary(e)
             return False, concise_error
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"LLM validation failed with unexpected error: {error_msg}")
+            logger.error(f"LLM validation failed with unexpected error: {e}")
             # Extract concise error summary before returning
-            concise_error = _extract_error_summary(error_msg)
+            concise_error = _extract_error_summary(e)
             return False, concise_error

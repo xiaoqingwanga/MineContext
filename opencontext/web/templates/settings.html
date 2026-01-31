@@ -6,6 +6,18 @@
         <h1 class="h2">系统设置</h1>
     </div>
 
+    <!-- 数据目录信息 -->
+    <div class="alert alert-info d-flex align-items-center mb-3" role="alert">
+        <i class="bi bi-folder2-open me-2" style="font-size: 1.2rem;"></i>
+        <div>
+            <strong>数据目录 (CONTEXT_PATH):</strong>
+            <span id="contextPathDisplay" class="font-monospace ms-2">加载中...</span>
+            <button class="btn btn-sm btn-outline-secondary ms-2" onclick="copyContextPath()" title="复制路径">
+                <i class="bi bi-clipboard"></i>
+            </button>
+        </div>
+    </div>
+
     <ul class="nav nav-tabs" id="settingsTabs" role="tablist">
         <li class="nav-item" role="presentation">
             <button class="nav-link active" id="model-tab" data-bs-toggle="tab" data-bs-target="#model" type="button" role="tab">
@@ -52,7 +64,7 @@
                         </div>
                         <div class="mb-3">
                             <label for="modelId" class="form-label">模型 ID</label>
-                            <input type="text" class="form-control" id="modelId" placeholder="例如: gpt-4" required>
+                            <input type="text" class="form-control" id="modelId" placeholder="例如: gpt-5" required>
                         </div>
                         <div class="mb-3">
                             <label for="baseUrl" class="form-label">Base URL</label>
@@ -501,6 +513,9 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-success" id="exportBtn" onclick="exportHistoryRecord()" disabled>
+                    <i class="bi bi-download"></i> 导出记录
+                </button>
                 <button type="button" class="btn btn-primary" id="regenerateBtn" onclick="regenerateWithCurrent()" disabled>
                     <i class="bi bi-arrow-clockwise"></i> 使用当前Prompt重新生成
                 </button>
@@ -561,4 +576,90 @@
 
 {% block scripts %}
 <script src="/static/js/settings.js"></script>
+<script>
+// 加载数据目录信息
+async function loadSystemInfo() {
+    try {
+        const response = await fetch('/api/settings/system_info');
+        const data = await response.json();
+        if (data.code === 0 && data.data) {
+            const contextPath = data.data.context_path_absolute || data.data.context_path;
+            document.getElementById('contextPathDisplay').textContent = contextPath;
+            document.getElementById('contextPathDisplay').dataset.path = contextPath;
+        } else {
+            document.getElementById('contextPathDisplay').textContent = '获取失败';
+        }
+    } catch (error) {
+        console.error('加载系统信息失败:', error);
+        document.getElementById('contextPathDisplay').textContent = '获取失败';
+    }
+}
+
+// 复制数据目录路径
+function copyContextPath() {
+    const path = document.getElementById('contextPathDisplay').dataset.path ||
+                 document.getElementById('contextPathDisplay').textContent;
+    if (path && path !== '加载中...' && path !== '获取失败') {
+        navigator.clipboard.writeText(path).then(() => {
+            showToast('路径已复制到剪贴板');
+        }).catch(err => {
+            console.error('复制失败:', err);
+            showToast('复制失败', true);
+        });
+    }
+}
+
+// 页面加载时获取系统信息
+document.addEventListener('DOMContentLoaded', loadSystemInfo);
+
+// 导出历史记录
+window.exportHistoryRecord = async function() {
+    if (!selectedHistoryFile || !currentCategory) {
+        showToast('请先选择一条历史记录', true);
+        return;
+    }
+
+    const exportBtn = document.getElementById('exportBtn');
+    const originalBtnText = exportBtn.innerHTML;
+
+    try {
+        exportBtn.disabled = true;
+        exportBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>导出中...';
+
+        const response = await fetch(`/api/settings/prompts/history/${currentCategory}/${selectedHistoryFile}`);
+        const data = await response.json();
+
+        if (data.code === 0 && data.data) {
+            const exportData = {
+                category: currentCategory,
+                filename: selectedHistoryFile,
+                timestamp: data.data.timestamp,
+                messages: data.data.messages,
+                response: data.data.response
+            };
+
+            const jsonStr = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = selectedHistoryFile || 'export.json';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(downloadUrl);
+            }, 100);
+        } else {
+            showToast('导出失败: ' + (data.message || '未知错误'), true);
+        }
+    } catch (error) {
+        console.error('导出错误:', error);
+        showToast('导出失败: ' + error.message, true);
+    } finally {
+        exportBtn.disabled = false;
+        exportBtn.innerHTML = originalBtnText;
+    }
+};
+</script>
 {% endblock %}
