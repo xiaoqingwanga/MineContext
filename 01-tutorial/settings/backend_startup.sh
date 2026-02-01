@@ -14,5 +14,5 @@ export $(grep -v '^#' .env | xargs)
 
 echo "Starting OpenContext..."
 # Change to the project root directory so that config/config.yaml is found
-cd ..
+cd ../../
 uv run opencontext start
