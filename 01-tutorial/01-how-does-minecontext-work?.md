@@ -9,6 +9,7 @@ MineContext 是由火山引擎开源的个人记录助理。其通过后台智�
 ### 数据产生流程
 
 截图 -> 转换 -> 存储
+![](processing-pipeline.png)
 
 ### 数据消费流程
 
